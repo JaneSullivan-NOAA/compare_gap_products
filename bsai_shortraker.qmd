@@ -1,0 +1,179 @@
+---
+title: "BSAI shortraker rockfish"
+#format: html
+editor: visual
+format:
+  html: 
+    page-layout: full
+    fig-format: svg
+    fig-dpi: 400
+    fig-width: 80
+    fig-height: 50
+---
+
+## *Background*
+
+*The Groundfish Assessment Program is migrating to new database tables (housed in the `GAP_PRODUCTS` schema) starting in the 2024 groundfish stock assessment cycle. Here we compare bottom trawl survey (BTS) biomass and length frequencies for the AI BTS and EBS slope BTS using existing queries and updated queries. Comparisons are conducted through 2023. The old database tables will stay on AKFIN but will updated past 2023.*
+
+## *Setup*
+
+```{r}
+#| output: false
+
+libs <- c("tidyverse", "odbc", "keyring", "dbplyr", "kableExtra")
+if(length(libs[which(libs %in% rownames(installed.packages()) == FALSE )]) > 0) {
+  install.packages(libs[which(libs %in% rownames(installed.packages()) == FALSE)])}
+lapply(libs, library, character.only = TRUE)
+
+theme_set(theme_bw(base_size = 15) + 
+            theme(panel.border = element_blank(), 
+                  panel.grid.major = element_blank(),
+                  panel.grid.minor = element_blank(), 
+                  axis.line = element_line(colour = "black")))
+
+akfin <- DBI::dbConnect(odbc::odbc(), "akfin", uid = keyring::key_list("akfin")$username, pwd = keyring::key_get("akfin", keyring::key_list("akfin")$username))
+
+```
+
+## *Species code*
+
+The RACE species code for BSAI shortraker is 30576.
+
+```{r}
+my_spp_codes <- c(30576) # can be a single value or vector of values
+```
+
+## *New survey areas*
+
+*Instead of hosting various survey data in different database tables, the new `GAP_PRODUCTS` uses `SURVEY_DEFINITION_ID` and `TYPE` to identify the survey and the structure or aggregation of data desired by the user. For example, in the BSAI shortraker rockfish assessment, we pull biomass data at the subarea (aka INPFC) level for the AI BTS. This differs from the EBS shelf and slope surveys which are pulled at the regional level.*
+
+```{r}
+lkup <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_area')) %>% 
+  dplyr::left_join(dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_survey_design')) %>% 
+                     dplyr::distinct(SURVEY, SURVEY_DEFINITION_ID),
+                   by = join_by(SURVEY_DEFINITION_ID)) %>% 
+  dplyr::rename_all(tolower) %>% 
+  dplyr::collect()
+
+lkup %>% 
+  filter(survey %in% c('AI', 'EBS_SLOPE')) %>% 
+  distinct(survey, type) %>% 
+  arrange(survey, type) %>% 
+  kableExtra::kable("html") %>% 
+    kableExtra::kable_styling() %>% 
+    kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+*AI BTS:*
+
+```{r}
+ai_area_ids <- lkup %>% filter(survey == 'AI' & type == "SUBAREA") 
+ai_area_ids %>% 
+  distinct(survey_definition_id, area_id, type, area_name) %>% 
+  kableExtra::kable("html") %>% 
+    kableExtra::kable_styling() %>% 
+    kableExtra::scroll_box(width = "100%", height = "200px")
+ai_area_ids <- ai_area_ids %>% pull(area_id)
+```
+
+*EBS slope BTS:*
+
+```{r}
+ebs_slope_ids <- lkup %>% filter(survey == 'EBS_SLOPE' & type == 'REGION')
+ebs_slope_ids %>% 
+  distinct(survey_definition_id, area_id, type, area_name) %>% 
+    kableExtra::kable("html") %>% 
+    kableExtra::kable_styling() %>% 
+    kableExtra::scroll_box(width = "100%", height = "200px")
+  ebs_slope_ids <- ebs_slope_ids %>% pull(area_id)
+```
+
+## *Compare AI BTS biomass*
+
+### *Original query:*
+
+```{r}
+oldai <- dplyr::tbl(akfin, dplyr::sql('afsc.race_biomassinpfcaigoa')) %>% 
+  dplyr::rename_all(tolower) %>% 
+  dplyr::select(survey, area_id = summary_area, species_code, year, biomass_mt = area_biomass, biomass_var) %>% 
+  dplyr::filter(survey == "AI" & species_code %in% my_spp_codes & year >= 1991) %>% 
+  dplyr::left_join(dplyr::tbl(akfin, dplyr::sql('afsc.race_goastrataaigoa')) %>% 
+                     dplyr::rename_all(tolower) %>% 
+                     dplyr::filter(survey == "AI") %>% 
+                     dplyr::distinct(survey, area_id = summary_area, area_name = inpfc_area)) %>%  
+                   dplyr::collect()
+oldai %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *New query:*
+
+```{r}
+newai <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_biomass')) %>% 
+  dplyr::rename_all(tolower) %>% 
+  dplyr::select(survey_definition_id, area_id, species_code, year, biomass_mt, biomass_var) %>% 
+  dplyr::filter(species_code %in% my_spp_codes & area_id %in% ai_area_ids & year >= 1991) %>% 
+  dplyr::collect() %>% 
+  dplyr::left_join(lkup %>% select(survey_definition_id, area_id, area_name))
+newai %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *Combine data sets:*
+
+```{r}
+compareai <- newai %>% 
+  mutate(schema = "akfin.gap_products") %>% 
+  select(schema, year, area_name, area_id, species_code, biomass_mt, biomass_var) %>% 
+  bind_rows(oldai %>% 
+              mutate(schema = "akfin.afsc") %>% 
+              select(schema, year, area_name, area_id, species_code, biomass_mt, biomass_var)) %>% 
+  mutate(cv = ifelse(biomass_mt > 0, sqrt(biomass_var) / biomass_mt, NA))
+
+```
+
+```{r,fig.width=13,fig.height=11}
+ggplot(compareai, aes(x = factor(year), y = biomass_mt, fill = schema)) +
+  geom_bar(stat = 'identity', position = position_dodge2(width = 0.5, preserve = "single", padding = 0)) +
+  geom_errorbar(aes(ymin = biomass_mt - sqrt(biomass_var), ymax = biomass_mt + sqrt(biomass_var)),
+                position = position_dodge2(width = 0.5, preserve = "single", padding = 0)) +
+  facet_grid(species_code~area_name, scale = 'free_y') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = NULL)
+
+output <- compareai %>% 
+  pivot_wider(id_cols = c(year, area_name, species_code), names_from = schema, values_from = biomass_mt, values_fill = 0) %>% 
+  mutate(percent_change = (akfin.gap_products-akfin.afsc)/akfin.afsc * 100,
+         difference = akfin.gap_products-akfin.afsc,
+         variable = 'mean') %>% 
+  bind_rows(compareai %>% 
+              pivot_wider(id_cols = c(year, area_name, species_code), names_from = schema, values_from = cv, values_fill = 0) %>% 
+              mutate(percent_change = (akfin.gap_products-akfin.afsc)/akfin.afsc * 100,
+                     difference = akfin.gap_products-akfin.afsc,
+                     variable = 'cv')) %>% 
+  arrange(desc(variable), desc(abs(difference))) 
+
+
+```
+
+Compare biomass point estimates, largest absolute difference shown first:
+
+```{r}
+output %>%
+  filter(variable == 'mean') %>% 
+ kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+Compare estimates of CV, largest absolute difference shown first:
+
+```{r}
+output %>%
+  filter(variable == 'cv') %>% 
+ kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
