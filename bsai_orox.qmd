@@ -648,12 +648,18 @@ oldailen %>% kableExtra::kable("html") %>%
 newailen <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_sizecomp')) %>% 
   dplyr::rename_all(tolower) %>% 
   dplyr::select(survey_definition_id, area_id, species_code, year, length_mm, sex, population_count) %>% 
-  dplyr::filter(species_code %in% my_spp_codes & area_id %in% ailen_area_ids & year >= 1991) %>% 
-  dplyr::collect() %>% 
+  dplyr::filter(survey_definition_id == 52 & 
+                  species_code %in% my_spp_codes & 
+                  area_id %in% ailen_area_ids & 
+                  year >= 1991) %>% 
+  dplyr::collect() %>% #nrow
   dplyr::left_join(lkup %>% 
-                     filter(survey == 'AI') %>% 
-                     select(survey_definition_id, area_id, area_name), 
+                     filter(survey == 'AI' & area_id %in% ailen_area_ids & type == 'SUBAREA BY DEPTH') %>% 
+                     distinct(survey_definition_id, area_id, area_name), 
                    by = join_by(survey_definition_id, area_id))
+
+lkup %>% filter(survey == 'AI' & area_id %in% c(793, 794)) %>% distinct()
+
 ```
 
 ```{r}
