@@ -13,14 +13,14 @@ format:
 
 ## *Background*
 
-*The Groundfish Assessment Program is migrating to new database tables (housed in the `GAP_PRODUCTS` schema) starting in the 2024 groudfish stock assessment cycle. Here we compare bottom trawl survey (BTS) biomass and length frequencies for the AI BTS, EBS shelf BTS, and EBS slope BTS using existing queries and updated queries. We compare differences by species and aggregated to the stock complex.*
+*The Groundfish Assessment Program is migrating to new database tables (housed in the `GAP_PRODUCTS` schema) starting in the 2024 groundfish stock assessment cycle. Here we compare bottom trawl survey (BTS) biomass and length frequencies for the AI BTS, EBS shelf BTS, and EBS slope BTS using existing queries and updated queries. We compare differences by species and aggregated to the stock complex.*
 
 ## *Setup*
 
 ```{r}
 #| output: false
 
-libs <- c("tidyverse", "odbc", "keyring", "dbplyr", "kableExtra")
+libs <- c("tidyverse", "odbc", "keyring", "dbplyr", "kableExtra", "ggridges")
 if(length(libs[which(libs %in% rownames(installed.packages()) == FALSE )]) > 0) {
   install.packages(libs[which(libs %in% rownames(installed.packages()) == FALSE)])}
 lapply(libs, library, character.only = TRUE)
@@ -610,7 +610,7 @@ output %>%
 ```
 ## AI BTS lengths
 
-Due to sample size limitations, length frequency data are only presented for dusky rockfish (30152) and shortspine thornyhead (30020) in the BSAI other rockfish stock assessment. Additionally, length data are only available in the AI BTS and the EBS Slope BTS.
+Due to sample size limitations, length frequency data are only presented for dusky rockfish (30152) and shortspine thornyhead (30020) in the BSAI other rockfish stock assessment. Additionally, length data are only presented from the AI BTS.
 
 ```{r}
 my_spp_codes <- c(30152, 30020)
@@ -647,18 +647,21 @@ oldailen %>% kableExtra::kable("html") %>%
 #| output: false
 newailen <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_sizecomp')) %>% 
   dplyr::rename_all(tolower) %>% 
-  dplyr::select(survey_definition_id, area_id, species_code, year, length_mm, sex, population_count) %>% 
+  dplyr::select(survey_definition_id, area_id, species_code, year, length = length_mm, sex, population_count) %>% 
   dplyr::filter(survey_definition_id == 52 & 
                   species_code %in% my_spp_codes & 
                   area_id %in% ailen_area_ids & 
                   year >= 1991) %>% 
   dplyr::collect() %>% #nrow
   dplyr::left_join(lkup %>% 
-                     filter(survey == 'AI' & area_id %in% ailen_area_ids & type == 'SUBAREA BY DEPTH') %>% 
+                     filter(survey == 'AI' & area_id %in% ailen_area_ids & type == 'SUBAREA BY DEPTH') %>% #
                      distinct(survey_definition_id, area_id, area_name), 
                    by = join_by(survey_definition_id, area_id))
 
-lkup %>% filter(survey == 'AI' & area_id %in% c(793, 794)) %>% distinct()
+# this looks like a flaw in the area table. area_id 793 and 794 are used for
+# both type == `STRATUM` and type == `SUBAREA BY DEPTH` which means you can't
+# just join by survey_definition_id and area_id...
+# lkup %>% filter(survey == 'AI' & area_id %in% c(793, 794)) %>% distinct()
 
 ```
 
@@ -672,3 +675,41 @@ newailen %>% kableExtra::kable("html") %>%
 
 ### *Combine data sets by species and with all species combined:*
 
+```{r}
+names(oldailen);
+names(newailen)
+
+compareailens <- newailen %>% 
+  mutate(survey = "AI",
+         schema = "akfin.gap_products") %>% 
+  select(survey, schema, species_code, area_name, year, length, population_count) %>% 
+  bind_rows(oldailen %>% 
+              mutate(schema = "akfin.afsc") %>% 
+              select(survey, schema, species_code, area_name, year, length, population_count)) %>% 
+  group_by(survey, schema, species_code, area_name, year, length) %>% 
+  summarise(population_count = sum(population_count))
+
+dusky <- compareailens %>% filter(species_code == 30152)
+sst <- compareailens %>% filter(species_code == 30020)
+```
+### *Length frequency comparisons:*
+
+```{r,fig.width=14,fig.height=8}
+#| echo: false
+ggplot(dusky, aes(x = length, y = factor(year), height = population_count, fill = schema)) +
+  geom_density_ridges(stat = "identity", scale = 4, alpha = 0.5) +
+  theme(legend.position = "top") +
+  facet_wrap(~area_name) +
+labs(y = NULL, title = "AI dusky rockfish") 
+```
+Thornyhead rockfish:
+```{r,fig.width=14,fig.height=8}
+#| echo: false
+ggplot(sst, aes(x = length, y = factor(year), height = population_count, fill = schema)) +
+  geom_density_ridges(stat = "identity", scale = 4, alpha = 0.5) +
+  theme(legend.position = "top") +
+  facet_wrap(~area_name) +
+  labs(y = NULL, title = "AI shortspine thornyhead")
+```
+
+It looks like everything matches up for length comps except there are more shortspines in the SBS in the `gap_products` schema than in the old `afsc` schema.
