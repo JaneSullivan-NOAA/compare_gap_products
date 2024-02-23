@@ -31,7 +31,8 @@ theme_set(theme_bw(base_size = 15) +
                   panel.grid.minor = element_blank(), 
                   axis.line = element_line(colour = "black")))
 
-akfin <- DBI::dbConnect(odbc::odbc(), "akfin", uid = keyring::key_list("akfin")$username, pwd = keyring::key_get("akfin", keyring::key_list("akfin")$username))
+akfin <- DBI::dbConnect(odbc::odbc(), "akfin", uid = keyring::key_list("akfin")$username, 
+                        pwd = keyring::key_get("akfin", keyring::key_list("akfin")$username))
 
 ```
 
@@ -55,7 +56,11 @@ bsai_orox_codes_df %>%
 
 ## *New area IDs*
 
-*Instead of hosting various survey data in different database tables, the new `GAP_PRODUCTS` uses `SURVEY_DEFINITION_ID` and `TYPE` to identify the survey and the structure or aggregation of data desired by the user. For example, in the BSAI other rockfish assessment, we pull biomass data at the subarea level for the AI BTS. This differs from the EBS shelf and slope surveys which are pulled at the regional level.*
+*Instead of hosting various survey data in different database tables, the new `GAP_PRODUCTS` uses `SURVEY_DEFINITION_ID` and `AREA_TYPE` to identify the survey and the structure or aggregation of data desired by the user.*
+
+*`AREA_TYPE` specifies whether an AREA_ID is a stratum or subarea or managmenet group.*
+
+*For example, in the BSAI other rockfish assessment, we pull biomass data at the subarea level for the AI BTS. This differs from the EBS shelf and slope surveys which are pulled at the regional level.*
 
 ```{r}
 lkup <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_area')) %>% 
@@ -67,8 +72,8 @@ lkup <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_area')) %>%
   dplyr::collect()
 
 lkup %>% 
-  distinct(survey, type) %>% 
-  arrange(survey, type) %>% 
+  distinct(survey, area_type) %>% 
+  arrange(survey, area_type) %>% 
   kableExtra::kable("html") %>% 
     kableExtra::kable_styling() %>% 
     kableExtra::scroll_box(width = "100%", height = "200px")
@@ -77,9 +82,9 @@ lkup %>%
 *AI BTS:*
 
 ```{r}
-ai_area_ids <- lkup %>% filter(survey == 'AI' & type == "SUBAREA") 
+ai_area_ids <- lkup %>% filter(survey == 'AI' & area_type == "SUBAREA") 
 ai_area_ids %>% 
-  distinct(survey_definition_id, area_id, type, area_name) %>% 
+  distinct(survey_definition_id, area_id, area_type, area_name) %>% 
   kableExtra::kable("html") %>% 
     kableExtra::kable_styling() %>% 
     kableExtra::scroll_box(width = "100%", height = "200px")
@@ -87,10 +92,11 @@ ai_area_ids <- ai_area_ids %>% pull(area_id)
 ```
 
 *AI BTS for lengths*
+
 ```{r}
-ailen_area_ids <- lkup %>% filter(survey == 'AI' & type == "SUBAREA BY DEPTH") 
+ailen_area_ids <- lkup %>% filter(survey == 'AI' & area_type == "SUBAREA BY DEPTH") 
 ailen_area_ids %>% 
-  distinct(survey_definition_id, area_id, type, area_name, depth_min_m, depth_max_m) %>% 
+  distinct(survey_definition_id, area_id, area_type, area_name, depth_min_m, depth_max_m) %>% 
   kableExtra::kable("html") %>% 
     kableExtra::kable_styling() %>% 
     kableExtra::scroll_box(width = "100%", height = "200px")
@@ -100,25 +106,25 @@ ailen_area_ids <- ailen_area_ids %>% pull(area_id)
 *EBS shelf BTS:*
 
 ```{r}
-lkup %>% filter(survey == 'EBS' & type == 'REGION' ) %>% 
-  distinct(type, area_id, description) %>% 
+lkup %>% filter(survey == 'EBS' & area_type == 'REGION' ) %>% 
+  distinct(area_type, area_id, description) %>% 
   kableExtra::kable("html") %>% 
   kableExtra::kable_styling() %>% 
   kableExtra::scroll_box(width = "100%", height = "200px")
 # We have not traditionally included the NW Region
-ebs_shelf_ids <- lkup %>% filter(survey == 'EBS' & type == 'REGION' & description == 'EBS Standard Region: All Strata') %>% pull(area_id)
+ebs_shelf_ids <- lkup %>% filter(survey == 'EBS' & area_type == 'REGION' & description == 'EBS Standard Region: All Strata') %>% pull(area_id)
 ```
 
 *EBS slope BTS:*
 
 ```{r}
-ebs_slope_ids <- lkup %>% filter(survey == 'EBS_SLOPE' & type == 'REGION')
+ebs_slope_ids <- lkup %>% filter(survey == 'EBS_SLOPE' & area_type == 'REGION')
 ebs_slope_ids %>% 
-  distinct(survey_definition_id, area_id, type, area_name) %>% 
+  distinct(survey_definition_id, area_id, area_type, area_name) %>% 
     kableExtra::kable("html") %>% 
     kableExtra::kable_styling() %>% 
     kableExtra::scroll_box(width = "100%", height = "200px")
-  ebs_slope_ids <- ebs_slope_ids %>% pull(area_id)
+ebs_slope_ids <- ebs_slope_ids %>% distinct(area_id) %>%  pull(area_id)
 ```
 
 ## *Compare AI BTS biomass*
@@ -308,6 +314,7 @@ oldebs %>% kableExtra::kable("html") %>%
 ```
 
 ### *New query:*
+
 ```{r}
 newebs <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_biomass')) %>% 
   dplyr::rename_all(tolower) %>% 
@@ -316,7 +323,6 @@ newebs <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_biomass')) %>%
   dplyr::collect() %>% 
   dplyr::left_join(lkup %>% select(survey_definition_id, area_id, area_name, description))
 ```
-
 
 ```{r}
 #| echo: false
@@ -346,6 +352,7 @@ compareebs_combined <- compareebs %>%
   mutate(cv = ifelse(biomass_mt > 0, sqrt(biomass_var) / biomass_mt, NA))
 
 ```
+
 ### *Species-specific comparisons:*
 
 EBS Shelf BTS Biomass (+/- 1 SD), red = old data, blue = new data:
@@ -376,6 +383,7 @@ output <- compareebs %>%
                      variable = 'cv')) %>% 
   arrange(desc(variable), desc(abs(difference))) %>%   left_join(bsai_orox_codes_df %>% select(species_code, common_name)) 
 ```
+
 Comparison of biomass point estimates, largest differences shown first:
 
 ```{r}
@@ -470,13 +478,14 @@ oldebsslope %>% kableExtra::kable("html") %>%
 ```
 
 ### *New query:*
+
 ```{r}
 newebsslope <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_biomass')) %>%
   dplyr::rename_all(tolower) %>% 
   dplyr::select(survey_definition_id, area_id, species_code, year, biomass_mt, biomass_var) %>% 
   dplyr::filter(species_code %in% my_spp_codes & area_id %in% ebs_slope_ids) %>% 
   dplyr::collect() %>% 
-  dplyr::left_join(lkup %>% select(survey_definition_id, area_id, area_name))
+  dplyr::left_join(lkup %>% dplyr::filter(area_id %in% ebs_slope_ids) %>% distinct(survey_definition_id, area_id, area_name))
 ```
 
 ```{r}
@@ -536,6 +545,7 @@ output <- compareebsslope %>%
                      variable = 'cv')) %>% 
   arrange(desc(variable), desc(abs(difference))) %>%   left_join(bsai_orox_codes_df %>% select(species_code, common_name)) 
 ```
+
 Comparison of biomass point estimates, largest differences shown first:
 
 ```{r}
@@ -608,6 +618,7 @@ output %>%
   kableExtra::kable_styling() %>% 
   kableExtra::scroll_box(width = "100%", height = "200px")
 ```
+
 ## AI BTS lengths
 
 Due to sample size limitations, length frequency data are only presented for dusky rockfish (30152) and shortspine thornyhead (30020) in the BSAI other rockfish stock assessment. Additionally, length data are only presented from the AI BTS.
@@ -654,13 +665,13 @@ newailen <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_sizecomp')) %>%
                   year >= 1991) %>% 
   dplyr::collect() %>% #nrow
   dplyr::left_join(lkup %>% 
-                     filter(survey == 'AI' & area_id %in% ailen_area_ids & type == 'SUBAREA BY DEPTH') %>% #
+                     filter(survey == 'AI' & area_id %in% ailen_area_ids & area_type == 'SUBAREA BY DEPTH') %>% #
                      distinct(survey_definition_id, area_id, area_name), 
                    by = join_by(survey_definition_id, area_id))
 
-# this looks like a flaw in the area table. area_id 793 and 794 are used for
-# both type == `STRATUM` and type == `SUBAREA BY DEPTH` which means you can't
-# just join by survey_definition_id and area_id...
+# area_id 793 and 794 are used for both area_type == `STRATUM` and area_type == `SUBAREA
+# BY DEPTH` which means you can't just join by survey_definition_id and
+# area_id...
 # lkup %>% filter(survey == 'AI' & area_id %in% c(793, 794)) %>% distinct()
 
 ```
@@ -676,9 +687,6 @@ newailen %>% kableExtra::kable("html") %>%
 ### *Combine data sets by species and with all species combined:*
 
 ```{r}
-names(oldailen);
-names(newailen)
-
 compareailens <- newailen %>% 
   mutate(survey = "AI",
          schema = "akfin.gap_products") %>% 
@@ -692,6 +700,7 @@ compareailens <- newailen %>%
 dusky <- compareailens %>% filter(species_code == 30152)
 sst <- compareailens %>% filter(species_code == 30020)
 ```
+
 ### *Length frequency comparisons:*
 
 ```{r,fig.width=14,fig.height=8}
@@ -702,7 +711,9 @@ ggplot(dusky, aes(x = length, y = factor(year), height = population_count, fill 
   facet_wrap(~area_name) +
 labs(y = NULL, title = "AI dusky rockfish") 
 ```
+
 Thornyhead rockfish:
+
 ```{r,fig.width=14,fig.height=8}
 #| echo: false
 ggplot(sst, aes(x = length, y = factor(year), height = population_count, fill = schema)) +
