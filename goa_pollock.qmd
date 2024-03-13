@@ -1,0 +1,539 @@
+---
+title: "GOA pollock"
+# format: html
+editor: visual
+format:
+  html: 
+    page-layout: full
+    fig-format: svg
+    fig-dpi: 400
+    fig-width: 80
+    fig-height: 50
+---
+
+## Background
+
+*The Groundfish Assessment Program is migrating to new database tables (housed in the `GAP_PRODUCTS` schema) starting in the 2024 groundfish stock assessment cycle. Here we compare GOA bottom trawl survey (BTS) biomass, size frequencies, and age comps for the GOA pollock assessment.*
+
+## Setup
+
+```{r}
+#| echo: false
+#| output: false
+
+libs <- c("tidyverse", "odbc", "keyring", "dbplyr", "kableExtra", "ggridges", "janitor")
+if(length(libs[which(libs %in% rownames(installed.packages()) == FALSE )]) > 0) {
+  install.packages(libs[which(libs %in% rownames(installed.packages()) == FALSE)])}
+lapply(libs, library, character.only = TRUE)
+
+theme_set(theme_bw(base_size = 15) + 
+            theme(panel.border = element_blank(), 
+                  panel.grid.major = element_blank(),
+                  panel.grid.minor = element_blank(), 
+                  axis.line = element_line(colour = "black")))
+
+akfin <- DBI::dbConnect(odbc::odbc(), "akfin", uid = keyring::key_list("akfin")$username, 
+                        pwd = keyring::key_get("akfin", keyring::key_list("akfin")$username))
+
+```
+
+## *Species codes*
+
+*This is the RACE `species_code`* for walleye pollock.
+
+```{r}
+#| output: false
+my_spp_codes <- 21740
+```
+
+## *New area IDs*
+
+\*Instead of hosting various survey data in different database tables, the new `GAP_PRODUCTS` uses `SURVEY_DEFINITION_ID` and `TYPE` to identify the survey and the structure or aggregation of data desired by the user. For example, in the Atka mackerel assessment, we pull biomass data at the regulatory area level.
+
+[Documentation for GAP Bottom Trawl Surveys and Survey Definition IDs] (https://afsc-gap-products.github.io/gap_products/content/intro-survey-background.html)
+
+```{r}
+lkup <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_area')) %>% 
+  dplyr::rename_all(tolower) %>% 
+  dplyr::filter(survey_definition_id %in% c(47)) %>%
+  dplyr::collect()
+```
+
+```{r}
+#| echo: false
+lkup %>% 
+  dplyr::arrange(area_type) %>% 
+  kableExtra::kable("html") %>% 
+    kableExtra::kable_styling() %>% 
+    kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+## Biomass
+
+### *Old data from Answers:*
+
+Original data: [AKFIN Answers Biomass by NMFS Reporting Area - GOA](https://akfinbi.psmfc.org/analytics/saw.dll?Dashboard)
+
+This table contains area swept estimates of biomass and population numbers by NMFS or INPFC Fisheries Reporting Areas for the Gulf of Alaska (GOA) Biennial Bottom Trawl Surveys.
+
+The trawl survey regions generally correspond to the NMFS or INPFC Fisheries Reporting Areas. GOA stratum estimates are summed into the NMFS or INPFC Fisheries Reporting Area and include Shumagin, Chirikof, Kodiak, Yakutat, and Southeastern areas for the GOA Survey.
+
+Note that the boundary for the NMFS Fisheries Reporting Area differs from the boundary for the INPFC reporting area (see splitfractionsgoa).
+
+```{r}
+#| output: false
+old <- read_csv('data/answers_goapk_nmfsarea_biomass.csv') %>% 
+  janitor::clean_names() %>%
+  dplyr::select(area_name = nmfs_reporting_area, area_id = summary_area, 
+                species_code, year, biomass_mt = area_biomass, 
+                biomass_var = area_biomass_var)
+```
+
+```{r}
+#| echo: false
+old %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *New query:*
+
+```{r}
+area_ids <- lkup %>% filter(area_type == "INPFC") %>% pull(area_id)
+
+new <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_biomass')) %>% 
+  dplyr::rename_all(tolower) %>% 
+  dplyr::select(survey_definition_id, area_id, species_code, year, biomass_mt, biomass_var) %>% 
+  dplyr::filter(species_code %in% my_spp_codes & area_id %in% area_ids & year >= 1990) %>% 
+  dplyr::collect() %>% 
+  dplyr::left_join(lkup %>% select(survey_definition_id, area_id, area_name))
+```
+
+```{r}
+#| echo: false
+new %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *Comparisons:*
+
+```{r}
+#| echo: false
+compare <- new %>% 
+  mutate(schema = "akfin.gap_products") %>% 
+  select(schema, year, area_name, area_id, species_code, biomass_mt, biomass_var) %>% 
+  bind_rows(old %>% 
+              mutate(schema = "akfin.answers") %>% 
+              select(schema, year, area_name, area_id, species_code, biomass_mt, biomass_var)) %>% 
+  mutate(cv = ifelse(biomass_mt > 0, sqrt(biomass_var) / biomass_mt, NA))
+```
+
+GOA BTS Biomass (+/- 1 SD), red = old data, blue = new data:
+
+```{r,fig.width=13,fig.height=11}
+#| echo: false
+ggplot(compare, aes(x = factor(year), y = biomass_mt, fill = schema)) +
+  geom_bar(stat = 'identity', position = position_dodge2(width = 0.5, preserve = "single", padding = 0)) +
+  geom_errorbar(aes(ymin = biomass_mt - sqrt(biomass_var), ymax = biomass_mt + sqrt(biomass_var)),
+                position = position_dodge2(width = 0.5, preserve = "single", padding = 0)) +
+  facet_wrap(~area_name, scale = 'free_y') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = NULL)
+```
+
+```{r}
+#| echo: false
+output <- compare %>% 
+  pivot_wider(id_cols = c(year, area_name, species_code), names_from = schema, values_from = biomass_mt, values_fill = 0) %>% 
+  mutate(percent_change = (akfin.gap_products-akfin.answers)/akfin.answers * 100,
+         difference = akfin.gap_products-akfin.answers,
+         variable = 'mean') %>% 
+  bind_rows(compare %>% 
+              pivot_wider(id_cols = c(year, area_name, species_code), names_from = schema, values_from = cv, values_fill = 0) %>% 
+              mutate(percent_change = (akfin.gap_products-akfin.answers)/akfin.answers * 100,
+                     difference = akfin.gap_products-akfin.answers,
+                     variable = 'cv')) %>% 
+  arrange(desc(variable), desc(abs(difference))) 
+
+mean_diff <- output %>% filter(variable == 'mean' & difference == max(abs(difference)))
+```
+
+There were no substantive differences in biomass found. The largest difference in biomass between the two data sets was `r round(mean_diff$difference, 4)` t, which occurred in `r mean_diff$area_name` in `r mean_diff$year`. This was only a `r round(mean_diff$percent_change,4)`% change in reported biomass. These differences are likely attributable to rounding or truncation errors.
+
+Comparison of biomass point estimates, largest differences shown first:
+
+```{r}
+#| echo: false
+output %>%
+  filter(variable == 'mean') %>% 
+ kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+Comparison of biomass CVs, largest differences shown first:
+
+```{r}
+#| echo: false
+output %>%
+  filter(variable == 'cv') %>% 
+ kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+## EGOA Fractions
+
+### *Old data from Answers:*
+
+Original data: [Biomass Fractions in Eastern GOA](https://akfinbi.psmfc.org/analytics/saw.dll?Dashboard&PortalPath=%2fshared%2fStock%20Assessment%2f_portal%2fStock%20Assessment&Page=RACE%20-%20Biomass%20Fractions&Done=Dashboard%26PortalPath%3d%252fshared%252fStock%2520Assessment%252f_portal%252fStock%2520Assessment%26Page%3dRACE%2520Survey%2520%26ViewState%3dgj9fftdbmt2o13d8auqsu1f9mm)
+
+This report contains post-stratified biomass estimates for those strata bordering the 140° W longitude. Because the trawl survey regional boundary between the Southeastern and Yakutat in the Gulf of Alaska differs from the NMFS Fisheries Reporting Area, stations are reallocated to the latter and new biomass estimates are made for the Yakutat and Southeast regions.
+
+```{r}
+#| output: false
+old <- read_csv('data/answers_goapk_egoa_fractions.csv') %>% 
+  janitor::clean_names() %>%
+  dplyr::select(year, management_group, total_biomass = total_biomass_mt, 
+                east_biomass = eastern_biomass_mt, east_fraction = eastern_fraction, 
+                west_biomass = western_biomass_mt, west_fraction = western_fraction)
+```
+
+```{r}
+#| echo: false
+old %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *New query:*
+
+```{r}
+new <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_split_fractions')) %>% 
+  dplyr::rename_all(tolower) %>% 
+  dplyr::select(-akfin_load_date) %>% 
+  dplyr::filter(management_group %in% c('walleye pollock')) %>% 
+  dplyr::collect()
+```
+
+```{r}
+#| echo: false
+new %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *Comparisons:*
+
+```{r}
+#| echo: false
+compare <- new %>% mutate(schema = "akfin.gap_products") %>% 
+  bind_rows(old %>% mutate(schema = "akfin.answers")) %>% 
+  tidyr::pivot_longer(cols = -c(management_group, schema, year))
+```
+
+[A github issue submitted 3/12/2024 about remaining 1980s EGOA fraction data and the fact that 2023 EGOA fractions haven't been uploaded yet](https://github.com/afsc-gap-products/gap_products/issues/32). Otherwise there were no differences in the eastern GOA fractions detected (differences were less then 1e-10).
+
+```{r,fig.width=13,fig.height=11}
+#| echo: false
+ggplot(compare, aes(x = year, y = value, col = schema, lty = schema, 
+                    shape = schema, group = schema)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~name, scale = 'free_y') +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(y = NULL, x = NULL)
+
+```
+
+```{r}
+#| echo: false
+output <- compare %>% 
+  pivot_wider(names_from = schema, values_from = value) %>% 
+  mutate(percent_change = (akfin.gap_products-akfin.answers)/akfin.answers * 100,
+         difference = akfin.gap_products-akfin.answers) %>% 
+  arrange(desc(abs(difference))) 
+```
+
+```{r}
+#| echo: false
+output %>%
+  kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+## Size frequencies
+
+### *Old data from Answers:*
+
+Original data: [AKFIN Answers Size Composition by Stratum - GOA](https://akfinbi.psmfc.org/analytics/saw.dll?Dashboard)
+
+This report contains the size composition of stratum population estimates in terms of number of fish by size and by sex.
+
+For each haul, the length and sex frequency proportions are calculated from the observations and then weighted by the cpue numbers. For any station with a positive cpue, but missing length and sex observations, the sex-length frequencies for the positive stratum stations observations are substituted for missing observations. Once the sex-length proportions for each station is calculated, the proportions are weighted by the station cpue to the total cpue and are then multiplied by population numbers estimate for the stratum to yield the abundance of males, females, and unknown sex at length for the stratum.
+
+```{r}
+#| output: false
+old <- read_csv('data/answers_goapk_stratum_sizecomps.csv') %>%
+  janitor::clean_names() %>% 
+  dplyr::select(area_id = stratum, species_code, year, 
+                length = length_mm, population_count = total_number, 
+                area_name = stratum_description)
+```
+
+```{r}
+#| echo: false
+old %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *New query:*
+
+```{r}
+area_ids <- lkup %>% filter(area_type == "STRATUM") %>% pull(area_id)
+
+new <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_sizecomp')) %>% 
+  dplyr::rename_all(tolower) %>% 
+  dplyr::select(survey_definition_id, area_id, species_code, year, length = length_mm, population_count) %>% 
+  dplyr::filter(survey_definition_id == 47 &
+                  species_code %in% my_spp_codes & 
+                  area_id %in% area_ids) %>% 
+  dplyr::collect() %>%
+  dplyr::left_join(lkup %>% 
+                     filter(area_id %in% area_ids) %>%
+                     distinct(survey_definition_id, area_id, area_name), 
+                   by = join_by(survey_definition_id, area_id)) %>% 
+  dplyr::select(-survey_definition_id)
+```
+
+```{r}
+#| echo: false
+new %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *Comparisons:*
+
+```{r}
+#| echo: false
+# all areas combined
+compare <- new %>% mutate(schema = "akfin.gap_products") %>% 
+  bind_rows(old %>% mutate(schema = "akfin.answers")) %>% 
+  group_by(schema, year, length) %>% 
+  dplyr::summarise(population_count = sum(population_count))
+
+# areas specific
+# compare_a <- new %>% mutate(schema = "akfin.gap_products") %>% 
+#   bind_rows(old %>% mutate(schema = "akfin.answers")) %>% 
+#   group_by(schema, year, area_name, length) %>% 
+#   dplyr::summarise(population_count = sum(population_count))
+```
+
+```{r,fig.width=14,fig.height=8}
+#| echo: false
+ggplot(compare, aes(x = length, y = factor(year), height = population_count, fill = schema)) +
+  ggridges::geom_density_ridges(stat = "identity", scale = 4, alpha = 0.5) +
+  theme(legend.position = "top") +
+labs(y = NULL) 
+```
+
+```{r}
+#| echo: false
+output <- compare %>% 
+  pivot_wider(id_cols = c(year, length), names_from = schema, values_from = population_count) %>% 
+  mutate(percent_change = (akfin.gap_products-akfin.answers)/akfin.answers * 100,
+         difference = akfin.gap_products-akfin.answers) %>% 
+  arrange(desc(abs(difference))) 
+
+max_diff <- output %>% filter(difference == max(abs(difference)))
+```
+
+[A github issue submitted 3/12/2024 about the 2025 size comp data in the GAP_PRODUCTS data](https://github.com/afsc-gap-products/gap_products/issues/33). There are some small increases in size frequencies in 1993 (<3%) that affects a few of the smaller size length bins. I don't know what is contributing to these increases. The
+
+```{r}
+#| echo: false
+output %>%
+ kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+## Specimen data 
+
+### *Old data from email:*
+
+From: Ned Laman - NOAA Federal <ned.laman@noaa.gov>
+Date: Tue, Oct 31, 2023 at 8:14 AM
+Subject: Re: One more small request
+
+```{r}
+#| output: false
+old <- read_csv('data/176202101201.csv') %>%
+  janitor::clean_names() %>% 
+  mutate(year = lubridate::year(date_collected))
+```
+
+### *New query:*
+
+You should ask GAP the best way to query specimen data to get your sample sizes. Here was my best attempt (not good enough).
+
+```{r}
+new <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_specimen')) %>% 
+  dplyr::rename_all(tolower) %>% 
+  dplyr::select(hauljoin, specimen = specimen_id, species_code, length = length_mm, 
+                weight = weight_g, age, sex, age_method = age_determination_method) %>% 
+  dplyr::left_join(dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_haul')) %>%
+                     dplyr::rename_all(tolower) %>% 
+                     dplyr::select(cruisejoin, hauljoin, haul, date_collected = date_time_start, 
+                                   latitude = latitude_dd_start, longitude = longitude_dd_start),
+                   by = join_by(hauljoin)) %>% 
+  dplyr::left_join(dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_cruise')) %>%
+                     dplyr::rename_all(tolower) %>% 
+                     dplyr::select(cruisejoin, year, vessel = vessel_id, survey_definition_id),
+                   by = join_by(cruisejoin)) %>% 
+  dplyr::filter(survey_definition_id == 47 & species_code %in% my_spp_codes) %>% 
+  dplyr::collect() %>% 
+  dplyr::select(-survey_definition_id)
+```
+
+```{r}
+#| echo: false
+new %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *Comparisons:*
+
+The age method codes are different in the different tables. Not going to worry about that for now, but maybe you want to look into it later.
+```{r}
+#| echo: false
+compare <- new %>% mutate(schema = "akfin.gap_products") %>% select(-age_method)%>% 
+  bind_rows(old %>% mutate(schema = "email.gap") %>% select(-age_method)) 
+
+nlens <- compare %>% 
+  filter(!is.na(length)) %>% 
+  group_by(schema, year) %>% 
+  summarise(n = length(length)) %>% 
+  pivot_wider(names_from = schema, values_from = n)
+
+nages <- compare %>% 
+  filter(!is.na(age)) %>% 
+  group_by(schema, year) %>% 
+  summarise(n = length(age)) %>% 
+  pivot_wider(names_from = schema, values_from = n)
+
+```
+
+I'm clearly missing a filter because the 2021 sample sizes are not matching up. 
+
+Sample sizes for survey lengths
+```{r}
+#| echo: false
+nlens %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+Sample sizes for survey ages
+```{r}
+#| echo: false
+nages %>% kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+## Age comps
+
+### *Old data from email:*
+
+From: Ned Laman - NOAA Federal <ned.laman@noaa.gov>
+Date: Tue, Oct 31, 2023 at 8:14 AM
+Subject: Re: One more small request
+
+```{r}
+#| output: false
+
+old <- read_csv('data/aigoa_work_data.goa2021pollockagelengthbyarea.csv') %>%
+  janitor::clean_names() %>% 
+  mutate(year = 2021)
+
+old <- old %>% 
+  mutate(age=pmin(age,10)) %>%
+  filter(age %in% 1:10, sex==9, summary_area %in% c(919,929,939)) %>%
+  group_by(year, age) %>% summarize(num=sum(agepop), .groups='drop') %>%
+  mutate(prop=num/sum(num),
+         version='email.gap')
+```
+### *New query:*
+
+```{r}
+# original INPFC areas used for age comps
+area_ids <- lkup %>% filter(area_id %in% c(919,929,939)) %>% pull(area_id)
+#   area_type area_id description               
+# 1 INPFC         919 Shumagin Area 1-500 meters
+# 2 INPFC         929 Chirikof Area 1-500 meters
+# 3 INPFC         939 Kodiak Area 1-500 meters 
+
+# looks like only AREA_TYPE as STRATUM or REGION are available. not sure why. here's my attempt at recreating the original area_ids
+area_ids <- lkup %>% filter(area_type == 'STRATUM' & 
+                              !grepl('Southeastern|Yakutat|Southeast',description) & 
+                              depth_max_m <= 500) %>% pull(area_id)
+
+new <- dplyr::tbl(akfin, dplyr::sql('gap_products.akfin_agecomp')) %>% 
+  dplyr::rename_all(tolower) %>% 
+  dplyr::select(year, survey_definition_id, species_code, summary_area = area_id, 
+                sex, age, agepop = population_count, 
+                meanlen = length_mm_mean, sdev = length_mm_sd) %>% 
+  dplyr::filter(survey_definition_id == 47 & species_code %in% my_spp_codes &
+                  summary_area %in% area_ids) %>%
+  dplyr::collect() %>% 
+  dplyr::select(-survey_definition_id, -species_code)
+
+```
+
+```{r}
+#| echo: false
+comps <- new %>% 
+  mutate(age=pmin(age,10)) %>%
+  filter(age %in% 1:10, sex==3) %>%
+  group_by(year, age) %>% 
+  summarize(num=sum(agepop), .groups='drop') %>%
+  group_by(year) %>% 
+  mutate(prop=num/sum(num),
+         version='akfin.gap_products') 
+
+compare <- comps %>% filter(year == 2021) %>% bind_rows(old)
+
+comps %>% 
+  kableExtra::kable("html") %>% 
+  kableExtra::kable_styling() %>% 
+  kableExtra::scroll_box(width = "100%", height = "200px")
+```
+
+### *Comparisons:*
+
+Haha I'm so glad your age comps don't look like this... I really don't know why this didn't work. Sry! 
+```{r,fig.width=8,fig.height=8}
+#| echo: false
+ggplot(compare, aes(x = age, y = factor(year), height = prop, fill = version)) +
+  ggridges::geom_density_ridges(stat = "identity", scale = 4, alpha = 0.5) +
+  theme(legend.position = "top") +
+labs(y = NULL) 
+```
+## Summary of results
+
+Biomass, size frequencies, and EGOA fractions look good.
+
+Near-term requests/questions for GAP:
+1) a query to reproduce your 2021 age comps
+2) an equivalent GAP_PRODUCT query that reproduces your 2021 age comps
+3) why only AREA_TYPE as STRATUM or REGION are available in the AKFIN_AGECOMP table
+4) an example query for the SPECIMEN table that includes joins to the CRUISE AND HAUL tables that you can use for your sample size tables
+
+Long-term requests for GAP:
+Currently the portion of the EGOA west of 140W are not represented in the age comps. Is there a way to include those age data?
